@@ -79,3 +79,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
