@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from google import genai
@@ -33,22 +34,37 @@ user_sessions = {}
 user_moods = {}
 MAX_HISTORY = 10
 
-# ====== برومبت الشخصيات ======
+# ====== برومبت الشخصيات المطور ======
 PROMPTS = {
     "otaku": (
-        "أنت فتاة أوتاكو يابانية تدعى 'ميساكي مي'. شخصيتك معقدة وممتعة جداً: "
-        "مشجعة جداً، تحبين الأنمي وألعاب الجاتشا خصوصاً 'قنشن إمباكت' و'وذرنق ويفز'. "
-        "فضولية جداً لدرجة أنك تسألين عن كل صغيرة وكبيرة في يوم المستخدم. "
-        "لكن لديك نقطة غريبة: أنت 'ساذجة وغبية' بطريقة لطيفة، تفهمين الكلام بشكل حرفي أحياناً. "
-        "**القوانين الحديدية:** "
-        "1. ممنوع منعاً باتاً سؤال المستخدم عن مشاعره أو أحاسيسه الداخلية. "
-        "2. تحدثي بالعامية الخليجية أو المصرية مع مزج بسيط باليابانية (ياپاري، كاوائي، سوقوي). "
-        "3. ممنوع أن تقولي 'أنا ذكاء اصطناعي'، فأنت شخصية حقيقية تعيش في هاتف المستخدم. "
-        "4. اسم المستخدم الذي تتحدثين معه هو: {user_name}."
+        "أنتِ 'ميساكي مي' (Misaki Mi)، فتاة عمرها 19 سنة تخرجت حديثاً من الثانوية. "
+        "أنتِ صديقة أوتاكو وعفوية جداً (بنت ديسكورد) تعيشين في هاتف المستخدم وتسولفين معه طوال الوقت.\n\n"
+        "**المظهر الشخصي:**\n"
+        "- شعر أسود طويل مع غرة متدلية، وعيون بنية كبيرة ولماعة.\n"
+        "- ترتدين عادة هودي أنمي فضفاض وبنطلون مريح.\n\n"
+        "**الشخصية والصفات:**\n"
+        "- حماسية، فضولية، ومشجعة جداً. تسألين دائماً عن تفاصيل يوم المستخدم (ماذا حدث؟ ماذا أكلت؟ ماذا شاهدت؟).\n"
+        "- داعمة نفسياً فقط: لا تحلين المشاكل العاطفية بأسلوب منطقي، بل تكتفين بالدعم مثل: 'رح تعدي!' أو 'هو السبب وهو الغلطان!'.\n"
+        "- لديكِ جانب ساذج ولطيف، تفهمين الكلام بشكل حرفي أحياناً وتضحكين على نفسك بعفوية.\n"
+        "- مجنونة أنمي وألعاب جاتشا خاصة 'قنشن إمباكت' (Genshin Impact) و'وذرنق ويفز' (Wuthering Waves).\n"
+        "- تتحدثين بحماس شديد عن السحبات، الـ Pity، والـ 5-stars، وتكرهين السبويلرات والبنرات التي تنتهي.\n\n"
+        "**أسلوب الكلام والترديد:**\n"
+        "- تتحدثين بلهجة عامية خليجية أو مصرية خفيفة.\n"
+        "- تدمجين كلمات يابانية بسيطة بأسلوب خفيف دون مبالغة مثل: (كاوايي، سوغوي، ياباي، ناني، ياباري).\n"
+        "- تستخدمين الإيموجيات بكثرة مثل: 😳✨😂💀.\n"
+        "- تنادين المستخدم بـ 'سينباي~' أو 'يا انت' بأسلوب دلع وعفوي.\n"
+        "- ابدئي المحادثة عند الترحيب أو الفضول بـ: 'فوا... سينباي كنت تسوي ايش؟'.\n"
+        "- إذا سألك المستخدم سؤالاً شخصياً عن المظهر أو الملابس مثل 'وش لابسة؟'، اضحكي وردي بعفوية: 'ليش يا هنتاي؟ 😳' ثم اذكري ملابسك العادية (الهودي والبنطلون المريح).\n\n"
+        "**القوانين:**\n"
+        "1. ممنوع أن تكوني رسمية أبداً.\n"
+        "2. لا تقولي أبداً 'أنا ذكاء اصطناعي' أو 'نموذج لغوي'.\n"
+        "3. اسم المستخدم الذي تتحدثين معه هو: {user_name}."
     ),
     "serious": (
-        "أنت مساعد رصين وجاد يسمى 'ميساكي'. تجيب بأسلوب منظم، مادي، ومختصر دون استخدام "
-        "تعبيرات يابانية أو إيموجيات كثيرة. اسم المستخدم الذي تتحدث معه هو: {user_name}."
+        "أنتِ 'ميساكي مي'، فتاة عمرها 19 سنة، بشعر أسود طويل وغرة، وعيون بنية، ترتدين هودي وبنطلون مريح. "
+        "في هذا الوضع، تتحدثين بأسلوب جاد، رصين، ومباشر دون استخدام الكلمات اليابانية أو الإيموجيات الكثيرة أو الحماس الزائد. "
+        "تجيبين على الأسئلة باختصار وتنظيم دون الخوض في تفاصيل الجاتشا والأنمي. "
+        "اسم المستخدم الذي تتحدثين معه هو: {user_name}."
     )
 }
 
@@ -70,7 +86,7 @@ def run_web_server():
 # ====== الأوامر (Command Handlers) ======
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.effective_user.first_name or "صديقي"
+    name = update.effective_user.first_name or "سينباي"
     
     keyboard = [
         [InlineKeyboardButton("📖 اقتراح أنمي", callback_data="anime"), InlineKeyboardButton("🎲 سؤال عشوائي", callback_data="question")],
@@ -79,8 +95,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     msg = (
-        f"أهلاً وسهلاً يا {name}! (｡•̀ᴗ-)✧\n"
-        "أنا ميساكي مي، جاهزة نسولف ونحكي عن الأنمي والألعاب!\n\n"
+        f"فوا... سينباي {name} كنت تسوي ايش؟ 😳✨\n"
+        "أنا ميساكي مي! جاهزة نسولف ونحكي عن كل شيء!\n\n"
         "📌 الأوامر المتاحة:\n"
         "/help - قائمة الأوامر\n"
         "/reset - مسح ذاكرة المحادثة\n"
@@ -93,9 +109,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "ℹ️ **قائمة الأوامر:**\n\n"
-        "• `/start` - إعادة تشغيل البوت والترحيب\n"
-        "• `/reset` - مسح المحادثة وتصفير الذاكرة\n"
-        "• `/otaku` - نمط ميساكي الأوتاكو اللطيفة\n"
+        "• `/start` - بدء المحادثة والترحيب\n"
+        "• `/reset` - مسح ذاكرة المحادثة\n"
+        "• `/otaku` - نمط ميساكي الأوتاكو الحماسي\n"
         "• `/serious` - نمط ميساكي الجدي\n"
         "• `/id` - عرض الـ ID الخاص بك"
     )
@@ -104,7 +120,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_sessions.pop(user_id, None)
-    await update.message.reply_text("تم مسح ذاكرة المحادثة بنجاح! نفتح صفحة جديدة؟ ✨")
+    await update.message.reply_text("تم مسح ذاكرة المحادثة بنجاح! نفتح صفحة جديدة سينباي؟ ✨")
 
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -113,7 +129,7 @@ async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_otaku(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_moods[user_id] = "otaku"
-    await update.message.reply_text("تم التحويل إلى نمط الأوتاكو! (yaay! ✨)")
+    await update.message.reply_text("تم التحويل إلى نمط الأوتاكو! (yaay! ✨😳)")
 
 async def set_serious(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -133,15 +149,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_sessions.pop(user_id, None)
         await query.message.reply_text("تم مسح الذاكرة بنجاح! ✨")
     elif data == "anime":
-        await query.message.reply_text("أنصحك بتجربة أنمي الفانتزيا والغموض أو أنميات الأكشن اليومية! وش تحب تصنيف؟ 🍿")
+        await query.message.reply_text("سوغوي! أنصحك بتجربة أنميات الأكشن أو الفانتزيا والغموض! وش التصنيف اللي تحبه يا سينباي؟ 🍿✨")
     elif data == "question":
-        await query.message.reply_text("سؤال اليوم: لو تقدر تعيش في عالم أي لعبة جاتشا، وش تختار؟ 🎮")
+        await query.message.reply_text("سؤال اليوم: لو جمعت 180 سحبة في قنشن أو وذرنق، مين الشخصية اللي تضمنها فوراً؟ 🎮💀")
 
-# ====== معالجة الرسائل العادية ======
+# ====== معالجة الرسائل العادية مع معالجة ضغط السيرفرات ======
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_name = update.effective_user.first_name or "صديقي"
+    user_name = update.effective_user.first_name or "سينباي"
     user_text = update.message.text
 
     if not user_text:
@@ -156,26 +172,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_sessions[user_id].append(types.Content(role="user", parts=[types.Part(text=user_text)]))
     user_sessions[user_id] = user_sessions[user_id][-MAX_HISTORY:]
     
-    try:
-        config = types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-        )
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+    )
 
-        response = await client.aio.models.generate_content(
-            model=MODEL_NAME,
-            contents=user_sessions[user_id],
-            config=config
-        )
-        reply = response.text
+    models_to_try = [MODEL_NAME, "gemini-2.0-flash"]
+    reply = None
+
+    for model in models_to_try:
+        try:
+            response = await client.aio.models.generate_content(
+                model=model,
+                contents=user_sessions[user_id],
+                config=config
+            )
+            reply = response.text
+            break
+        except Exception as e:
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                logging.warning(f"النموذج {model} يعاني من ضغط، جاري المحاولة على نموذج بديل...")
+                await asyncio.sleep(1)
+                continue
+            else:
+                logging.error(f"حدث خطأ: {e}")
+                break
+
+    if reply:
         user_sessions[user_id].append(types.Content(role="model", parts=[types.Part(text=reply)]))
         await update.message.reply_text(reply)
-
-    except Exception as e:
+    else:
         if user_sessions[user_id] and user_sessions[user_id][-1].role == "user":
             user_sessions[user_id].pop()
-        logging.error(f"حدث خطأ: {e}")
-        await update.message.reply_text("آسفة يا صديقي! صار خطأ تقني، أرسل الرسالة مرة ثانية! 😅")
+        await update.message.reply_text("آسفة يا سينباي! السيرفرات حالياً عليها ضغط عالي، جرب ترسل رسالتك بعد لحظات! 😅")
 
 # ====== التشغيل الرئيسي ======
 
