@@ -20,7 +20,6 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
 
 # ====== تهيئة جيميناي ======
 client = genai.Client(api_key=GEMINI_API_KEY)
-# ✅ التغيير الأهم: تم تحديث النموذج إلى gemini-3.6-flash كما طلبت جوجل في رسالة الخطأ
 MODEL_NAME = "gemini-3.6-flash"  
 
 # ====== الذاكرة ======
@@ -34,7 +33,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is running!")
     def log_message(self, format, *args):
-        pass # إخفاء سجلات الخادم الوهمي
+        pass
 
 def run_web_server():
     port = int(os.getenv("PORT", "10000"))
@@ -50,7 +49,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_text:
         return
 
-    # 1. بناء شخصية الصديقة الأوتاكو (تم تعديل طفيف لتحسين الالتزام بالتعليمات)
+    # 1. بناء شخصية الصديقة الأوتاكو
     if user_id not in user_sessions:
         system_prompt = (
             "أنت فتاة أوتاكو يابانية تدعى 'ميساكي مي'. شخصيتك معقدة وممتعة جداً: "
@@ -90,8 +89,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"حدث خطأ: {e}")
         await update.message.reply_text("آسفة يا صديقي! صار خطأ تقني، أرسل الرسالة مرة ثانية وأعدك أرد عليك! 😅")
 
-# ====== تشغيل البوت + الخادم الوهمي معاً ======
-def main():
+# ====== تشغيل البوت + الخادم الوهمي معاً (بشكل غير متزامن وثابت) ======
+async def main():
     # تشغيل الخادم الوهمي في خيط منفصل (Thread) حتى لا يوقف البوت
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
@@ -100,15 +99,18 @@ def main():
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
         
-        # ✅ إضافة مهمة جداً: حذف أي Webhook قديم لمنع مشكلة التعارض (409 Conflict)
-        asyncio.run(app.bot.delete_webhook(drop_pending_updates=True))
+        # ✅ تصحيح المشكلة: حذف أي Webhook قديم باستخدام await داخل الدالة
+        await app.bot.delete_webhook(drop_pending_updates=True)
         
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         print("✅ البوت شغال الآن... ميساكي مي في الخدمة!")
-        app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        
     except Exception as e:
         logging.critical(f"فشل تشغيل البوت: {e}")
         raise
 
+# تشغيل البرنامج
 if __name__ == "__main__":
-    main()
+    # استخدام asyncio.run مرة واحدة فقط لضمان عدم إغلاق الحلقة
+    asyncio.run(main())
