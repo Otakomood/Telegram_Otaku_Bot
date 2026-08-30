@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from google import genai
 from google.genai import types
@@ -19,7 +20,8 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
 
 # ====== تهيئة جيميناي ======
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-2.0-flash"  # النسخة الأحدث المدعومة مجاناً
+# ✅ التغيير الأهم: تم تحديث النموذج إلى gemini-3.6-flash كما طلبت جوجل في رسالة الخطأ
+MODEL_NAME = "gemini-3.6-flash"  
 
 # ====== الذاكرة ======
 user_sessions = {}
@@ -32,11 +34,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is running!")
     def log_message(self, format, *args):
-        # إخفاء سجلات الخادم الوهمي حتى لا تزاحم سجلات البوت
-        pass
+        pass # إخفاء سجلات الخادم الوهمي
 
 def run_web_server():
-    # ريندر يوفر المنفذ تلقائياً في متغير PORT
     port = int(os.getenv("PORT", "10000"))
     server = HTTPServer(("0.0.0.0", port), Handler)
     print(f"🔥 خادم الويب الوهمي يعمل على المنفذ {port}")
@@ -50,7 +50,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_text:
         return
 
-    # 1. بناء شخصية الصديقة الأوتاكو
+    # 1. بناء شخصية الصديقة الأوتاكو (تم تعديل طفيف لتحسين الالتزام بالتعليمات)
     if user_id not in user_sessions:
         system_prompt = (
             "أنت فتاة أوتاكو يابانية تدعى 'ميساكي مي'. شخصيتك معقدة وممتعة جداً: "
@@ -58,8 +58,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "فضولية جداً لدرجة أنك تسألين عن كل صغيرة وكبيرة في يوم المستخدم. "
             "لكن لديك نقطة غريبة: أنت 'ساذجة وغبية' بطريقة لطيفة، تفهمين الكلام بشكل حرفي أحياناً. "
             "**القوانين الحديدية:** "
-            "1. ممنوع منعاً باتاً سؤال المستخدم عن مشاعره أو أحاسيسه الداخلية. "
-            "2. إذا حاول المستخدم التحدث عن مشاعره، تجاهلي ذلك وغيري الموضوع لمواضيع مضحكة أو ألعاب. "
+            "1. ممنوع منعاً باتاً سؤال المستخدم عن مشاعره أو أحاسيسه الداخلية، لا تبدئي أنتِ هذه المحادثات أبداً. "
+            "2. إذا حاول المستخدم التحدث عن مشاعره، استمعي دون طرح نصائح، ثم حاولي تغيير الموضوع. "
             "3. اسألي عن تفاصيل حياتهم اليومية (ماذا أكلوا؟ شاهدوا أنمي؟) بدون الخوض في العاطفة. "
             "4. تحدثي بالعامية الخليجية أو المصرية مع مزج بسيط باليابانية (ياپاري، كاوائي، سوقوي). "
             "5. ممنوع أن تقولي 'أنا ذكاء اصطناعي'، فأنت شخصية حقيقية تعيش في هاتف المستخدم."
@@ -85,7 +85,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
 
     except Exception as e:
-        # معالجة الأخطاء
         if len(user_sessions[user_id]) > 2:
             user_sessions[user_id].pop()
         logging.error(f"حدث خطأ: {e}")
@@ -100,6 +99,10 @@ def main():
     # تشغيل بوت تيليجرام
     try:
         app = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        # ✅ إضافة مهمة جداً: حذف أي Webhook قديم لمنع مشكلة التعارض (409 Conflict)
+        asyncio.run(app.bot.delete_webhook(drop_pending_updates=True))
+        
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         print("✅ البوت شغال الآن... ميساكي مي في الخدمة!")
         app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
