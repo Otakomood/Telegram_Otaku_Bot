@@ -1,7 +1,6 @@
 import os
 import logging
 import threading
-import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from google import genai
 from google.genai import types
@@ -20,8 +19,9 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
 
 # ====== تهيئة جيميناي ======
 client = genai.Client(api_key=GEMINI_API_KEY)
-# استخدام اسم النموذج الرسمي المتاح
-MODEL_NAME = "gemini-2.5-flash"  
+
+# ✅ إرجاع اسم النموذج الصحيح بناءً على رسالة الخطأ
+MODEL_NAME = "gemini-3.6-flash"  
 
 # ====== الذاكرة ======
 user_sessions = {}
@@ -70,17 +70,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 2. إضافة رسالة المستخدم
     user_sessions[user_id].append(types.Content(role="user", parts=[types.Part(text=user_text)]))
 
-    # 3. إبقاء آخر MAX_HISTORY رسائل لضمان التنسيق السليم
+    # 3. قص السجل للحفاظ على الحد الأقصى
     user_sessions[user_id] = user_sessions[user_id][-MAX_HISTORY:]
     
     try:
-        # استخدام العميل غير المتزامن (client.aio) حتى لا يتم إيقاف استجابة البوت للبقية
+        # ✅ تجميد AFC عبر ضبط automatic_function_calling لإلغاء تحذير الـ Logs
+        config = types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+        )
+
         response = await client.aio.models.generate_content(
             model=MODEL_NAME,
             contents=user_sessions[user_id],
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT
-            )
+            config=config
         )
         reply = response.text
         user_sessions[user_id].append(types.Content(role="model", parts=[types.Part(text=reply)]))
@@ -94,17 +97,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ====== تشغيل البوت + الخادم الوهمي ======
 def main():
-    # تشغيل الخادم الوهمي في خيط منفصل (Thread)
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
 
-    # تشغيل بوت تيليجرام بالطريقة القياسية لـ python-telegram-bot
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("✅ البوت شغال الآن... ميساكي مي في الخدمة!")
-    
-    # run_polling تدير الـ Event Loop وتتولى مسح الـ Webhook تلقائياً عبر drop_pending_updates
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
