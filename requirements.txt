@@ -1,2 +1,2 @@
-python-telegram-bot==20.7
-google-generativeai
+google-genai>=0.8.0
+python-telegram-bot>=20.0
