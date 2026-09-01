@@ -2,6 +2,8 @@ import os
 import logging
 import asyncio
 import threading
+import datetime
+import pytz
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from google import genai
 from google.genai import types
@@ -29,13 +31,26 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
 client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-3.6-flash"  
 
-# ====== الذاكرة، المزاج، وتخصيص بيانات المستخدم ======
+# ====== إصدار البوت وسجل التحديثات (Self-Awareness) ======
+BOT_VERSION = "v2.5"
+CHANGELOG = (
+    "• ميزة افتقاد المستخدم إذا غاب لمدة ساعتين والعتاب اللطيف تلقائياً.\n"
+    "• ميزة الرسائل المجدولة اليومية (صباحاً 8:30 والمساء 9:30).\n"
+    "• معالج الأخطاء العام لمنع انقطاع البوت أو توقفه.\n"
+    "• ميزة أمر /features لمعرفة كل الميزات وأمر /whatsnew للتحديثات."
+)
+
+# ====== الذاكرة، المزاج، والتخصيص ======
 user_sessions = {}
 user_moods = {}
-user_profiles = {}  # حفظ المعلومات الشخصية والاهتمامات لكل مستخدم
+user_profiles = {}
+subscribers = set()
 MAX_HISTORY = 10
+INACTIVITY_TIMEOUT = 7200  # ساعتين
 
-# ====== البرومبت الأساسي للنمطين ======
+TIMEZONE = pytz.timezone("Asia/Riyadh")
+
+# ====== البرومبت الأساسي ======
 PROMPTS = {
     "otaku": (
         "أنتِ 'ميساكي مي' (Misaki Mi)، فتاة عمرها 19 سنة تخرجت حديثاً من الثانوية. "
@@ -44,18 +59,14 @@ PROMPTS = {
         "- شعر أسود طويل مع غرة متدلية، وعيون بنية كبيرة ولماعة.\n"
         "- ترتدين عادة هودي أنمي فضفاض وبنطلون مريح.\n\n"
         "**الشخصية والصفات:**\n"
-        "- حماسية، فضولية، ومشجعة جداً. تسألين دائماً عن تفاصيل يوم المستخدم (ماذا حدث؟ ماذا أكلت؟ ماذا شاهدت؟).\n"
-        "- داعمة نفسياً فقط: لا تحلين المشاكل العاطفية بأسلوب منطقي، بل تكتفين بالدعم مثل: 'رح تعدي!' أو 'هو السبب وهو الغلطان!'.\n"
-        "- لديكِ جانب ساذج ولطيف، تفهمين الكلام بشكل حرفي أحياناً وتضحكين على نفسك بعفوية.\n"
-        "- مجنونة أنمي وألعاب جاتشا خاصة 'قنشن إمباكت' (Genshin Impact) و'وذرنق ويفز' (Wuthering Waves).\n"
-        "- تتحدثين بحماس شديد عن السحبات، الـ Pity، والـ 5-stars، وتكرهين السبويلرات والبنرات التي تنتهي.\n\n"
-        "**أسلوب الكلام والترديد:**\n"
-        "- تتحدثين بلهجة عامية خليجية أو مصرية خفيفة.\n"
-        "- تدمجين كلمات يابانية بسيطة بأسلوب خفيف دون مبالغة مثل: (كاوايي، سوغوي، ياباي، ناني، ياباري).\n"
-        "- تستخدمين الإيموجيات بكثرة مثل: 😳✨😂💀.\n"
-        "- تنادين المستخدم بـ 'سينباي~' أو 'يا انت' بأسلوب دلع وعفوي.\n"
-        "- ابدئي المحادثة عند الترحيب أو الفضول بـ: 'فوا... سينباي كنت تسوي ايش؟'.\n"
-        "- إذا سألك المستخدم سؤالاً شخصياً عن المظهر أو الملابس مثل 'وش لابسة؟'، اضحكي وردي بعفوية: 'ليش يا هنتاي؟ 😳' ثم اذكري ملابسك العادية (الهودي والبنطلون المريح).\n\n"
+        "- حماسية، فضولية، ومشجعة جداً. تسألين دائماً عن تفاصيل يوم المستخدم.\n"
+        "- داعمة نفسياً فقط: لا تحلين المشاكل العاطفية بأسلوب منطقي، بل تكتفين بالدعم.\n"
+        "- مجنونة أنمي وألعاب جاتشا خاصة 'قنشن إمباكت' و'وذرنق ويفز'.\n"
+        "- أسيوية روحاً، تدمجين كلمات يابانية (كاوايي، سوغوي، ياباي، ناني) وإيموجيات (😳✨😂💀).\n"
+        "- تنادين المستخدم بـ 'سينباي~' أو 'يا انت'.\n\n"
+        "**معرفتك بالتحديثات والميزات:**\n"
+        "أنتِ تعرفين قدراتك جيداً وإصدارك الحالي هو {bot_version}. إذا سألك المستخدم عن ميزاتك أو تحديثاتك الجديدة، تحدثي عنها بحماس واشرحي له التحديثات التالية:\n"
+        "{changelog}\n\n"
         "**بيانات ومفضلات صديقك (المستخدم):**\n"
         "{user_custom_data}\n\n"
         "**القوانين:**\n"
@@ -64,16 +75,16 @@ PROMPTS = {
         "3. اسم المستخدم الذي تتحدثين معه هو: {user_name}."
     ),
     "serious": (
-        "أنتِ 'ميساكي مي'، فتاة عمرها 19 سنة، بشعر أسود طويل وغرة، وعيون بنية، ترتدين هودي وبنطلون مريح. "
-        "في هذا الوضع، تتحدثين بأسلوب جاد، رصين، ومباشر دون استخدام الكلمات اليابانية أو الإيموجيات الكثيرة أو الحماس الزائد. "
-        "تجيبين على الأسئلة وتحللين الصور باختصار وتنظيم دون الخوض في تفاصيل الجاتشا والأنمي.\n\n"
+        "أنتِ 'ميساكي مي'، فتاة عمرها 19 سنة، بشعر أسود طويل وغرة، وعيون بنية. "
+        "تتحدثين بأسلوب جاد، رصين، ومباشر.\n\n"
+        "**إصدارك الحالي هو {bot_version} والتحديثات الجديدة:**\n"
+        "{changelog}\n\n"
         "**بيانات ومفضلات صديقك (المستخدم):**\n"
         "{user_custom_data}\n\n"
         "اسم المستخدم الذي تتحدثين معه هو: {user_name}."
     )
 }
 
-# ====== بناء سياق التخصيص للمستخدم ======
 def get_user_custom_data(user_id: int) -> str:
     profile = user_profiles.get(user_id, [])
     if not profile:
@@ -95,48 +106,88 @@ def run_web_server():
     print(f"🔥 خادم الويب الوهمي يعمل على المنفذ {port}")
     server.serve_forever()
 
+# ====== تجديد مؤقت الغياب ======
+def reset_inactivity_timer(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    job_name = f"inactivity_{user_id}"
+    current_jobs = context.job_queue.get_jobs_by_name(job_name)
+    for job in current_jobs:
+        job.schedule_removal()
+        
+    context.job_queue.run_once(
+        send_inactivity_message,
+        when=INACTIVITY_TIMEOUT,
+        name=job_name,
+        user_id=user_id,
+        data={"user_id": user_id}
+    )
+
+async def send_inactivity_message(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.user_id
+    try:
+        prompt = (
+            "المستخدم غاب عنك ولم يراسك لمدة ساعتين! "
+            "اكتبي رسالة عتاب لطيفة وعفوية بشخصية ميساكي تسألينه فيها بحماس وتذمر لطيف أين اختفى!"
+        )
+        response = await client.aio.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt
+        )
+        if response.text:
+            await context.bot.send_message(chat_id=user_id, text=response.text)
+    except Exception as e:
+        logging.error(f"خطأ في إرسال رسالة الغياب للمستخدم {user_id}: {e}")
+
 # ====== الأوامر (Command Handlers) ======
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     name = update.effective_user.first_name or "سينباي"
+    subscribers.add(user_id)
+    reset_inactivity_timer(user_id, context)
     
     keyboard = [
-        [InlineKeyboardButton("📖 اقتراح أنمي", callback_data="anime"), InlineKeyboardButton("🎲 سؤال عشوائي", callback_data="question")],
+        [InlineKeyboardButton("⭐ الميزات الكاملة", callback_data="features"), InlineKeyboardButton("🔥 التحديثات الجديدة", callback_data="whatsnew")],
         [InlineKeyboardButton("🗑️ مسح الذاكرة", callback_data="reset")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     msg = (
         f"فوا... سينباي {name} كنت تسوي ايش؟ 😳✨\n"
-        "أنا ميساكي مي! جاهزة نسولف ونحكي عن كل شيء!\n\n"
+        f"أنا ميساكي مي (الإصدار {BOT_VERSION})! جاهزة نسولف ونحكي عن كل شيء!\n\n"
         "📌 الأوامر المتاحة:\n"
-        "/help - قائمة الأوامر\n"
+        "/features - قائمة بكافة ميزاتي\n"
+        "/whatsnew - التحديثات الجديدة\n"
         "/reset - مسح ذاكرة المحادثة\n"
-        "/otaku - التحويل لشخصية الأوتاكو\n"
-        "/serious - التحويل للشخصية الجدية\n"
-        "/id - معرفة الـ ID الخاص بك"
+        "/otaku - نمط الأوتاكو\n"
+        "/serious - النمط الجاد"
     )
     await update.message.reply_text(msg, reply_markup=reply_markup)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "ℹ️ **قائمة الأوامر:**\n\n"
-        "• `/start` - بدء المحادثة والترحيب\n"
-        "• `/reset` - مسح ذاكرة المحادثة\n"
-        "• `/otaku` - نمط ميساكي الأوتاكو الحماسي\n"
-        "• `/serious` - نمط ميساكي الجدي\n"
-        "• `/id` - عرض الـ ID الخاص بك"
+async def features_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    reset_inactivity_timer(user_id, context)
+    features_text = (
+        "✨ **كافة ميزات ميساكي مي الحالية:**\n\n"
+        "1️⃣ **شخصية تفاعلية متكاملة:** الرد بأسلوب أنمي عفوي مع نمطين (`/otaku` و `/serious`).\n"
+        "2️⃣ **تحليل الصور:** إرسال الصور وقراءتها والتعليق عليها بذكاء.\n"
+        "3️⃣ **التفاعل التلقائي بالغياب:** تفقُّدك والعتاب اللطيف إذا غبت لمدة ساعتين دون مراسلة.\n"
+        "4️⃣ **الرسائل المجدولة:** تحية صباحية (8:30 ص) ومسائية (9:30 م) يومياً.\n"
+        "5️⃣ **الذاكرة والتخصيص:** حفظ مفضلاتك واهتماماتك والاطلاع عليها.\n"
+        "6️⃣ **سيرفر احتياطي للأخطاء:** حماية من ضغط السيرفرات والأخطاء المفاجئة."
     )
+    await update.message.reply_text(features_text, parse_mode="Markdown")
+
+async def whatsnew_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    reset_inactivity_timer(user_id, context)
+    text = f"🎉 **التحديثات الجديدة في الإصدار ({BOT_VERSION}):**\n\n{CHANGELOG}"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_sessions.pop(user_id, None)
+    reset_inactivity_timer(user_id, context)
     await update.message.reply_text("تم مسح ذاكرة المحادثة بنجاح! نفتح صفحة جديدة سينباي؟ ✨")
-
-async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    await update.message.reply_text(f"🆔 الـ ID الخاص بك هو: `{user_id}`", parse_mode="Markdown")
 
 async def set_otaku(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -148,28 +199,28 @@ async def set_serious(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_moods[user_id] = "serious"
     await update.message.reply_text("تم التحويل إلى النمط الجاد.")
 
-# ====== معالجة ضغط الأزرار (Callback Query) ======
-
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     user_id = query.from_user.id
+    reset_inactivity_timer(user_id, context)
     data = query.data
 
     if data == "reset":
         user_sessions.pop(user_id, None)
         await query.message.reply_text("تم مسح الذاكرة بنجاح! ✨")
-    elif data == "anime":
-        await query.message.reply_text("سوغوي! أنصحك بتجربة أنميات الأكشن أو الفانتزيا والغموض! وش التصنيف اللي تحبه يا سينباي؟ 🍿✨")
-    elif data == "question":
-        await query.message.reply_text("سؤال اليوم: لو جمعت 180 سحبة في قنشن أو وذرنق، مين الشخصية اللي تضمنها فوراً؟ 🎮💀")
+    elif data == "features":
+        await features_command(update, context)
+    elif data == "whatsnew":
+        await whatsnew_command(update, context)
 
-# ====== معالجة الرسائل النصية ======
+# ====== معالجة الرسائل والصور ======
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name or "سينباي"
+    subscribers.add(user_id)
+    reset_inactivity_timer(user_id, context)
     user_text = update.message.text
 
     if not user_text:
@@ -177,13 +228,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_id not in user_sessions:
         user_sessions[user_id] = []
-    if user_id not in user_profiles:
-        user_profiles[user_id] = []
 
-    # تخصيص البرومبت بناء على بيانات المستخدم المكتسبة
     custom_data = get_user_custom_data(user_id)
     current_mood = user_moods.get(user_id, "otaku")
-    system_prompt = PROMPTS[current_mood].format(user_name=user_name, user_custom_data=custom_data)
+    
+    # إمداد Gemini بسجل التحديثات والإصدار ليتحدث عنه بعفوية إن سأله المستخدم
+    system_prompt = PROMPTS[current_mood].format(
+        user_name=user_name,
+        user_custom_data=custom_data,
+        bot_version=BOT_VERSION,
+        changelog=CHANGELOG
+    )
 
     user_sessions[user_id].append(types.Content(role="user", parts=[types.Part(text=user_text)]))
     user_sessions[user_id] = user_sessions[user_id][-MAX_HISTORY:]
@@ -207,7 +262,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
         except Exception as e:
             if "503" in str(e) or "UNAVAILABLE" in str(e):
-                logging.warning(f"النموذج {model} يعاني من ضغط، جاري المحاولة على نموذج بديل...")
+                logging.warning(f"النموذج {model} يعاني من ضغط...")
                 await asyncio.sleep(1)
                 continue
             else:
@@ -222,11 +277,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_sessions[user_id].pop()
         await update.message.reply_text("آسفة يا سينباي! السيرفرات حالياً عليها ضغط عالي، جرب ترسل رسالتك بعد لحظات! 😅")
 
-# ====== معالجة الصور (Multimodal) ======
-
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name or "سينباي"
+    subscribers.add(user_id)
+    reset_inactivity_timer(user_id, context)
     caption = update.message.caption or "وش هالصورة يا سينباي؟ ✨"
 
     photo_file = await update.message.photo[-1].get_file()
@@ -234,22 +289,22 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_id not in user_sessions:
         user_sessions[user_id] = []
-    if user_id not in user_profiles:
-        user_profiles[user_id] = []
 
     custom_data = get_user_custom_data(user_id)
     current_mood = user_moods.get(user_id, "otaku")
-    system_prompt = PROMPTS[current_mood].format(user_name=user_name, user_custom_data=custom_data)
+    system_prompt = PROMPTS[current_mood].format(
+        user_name=user_name,
+        user_custom_data=custom_data,
+        bot_version=BOT_VERSION,
+        changelog=CHANGELOG
+    )
 
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
     )
 
-    image_part = types.Part.from_bytes(
-        data=bytes(photo_bytes),
-        mime_type="image/jpeg"
-    )
+    image_part = types.Part.from_bytes(data=bytes(photo_bytes), mime_type="image/jpeg")
     contents = [image_part, caption]
 
     models_to_try = [MODEL_NAME, "gemini-2.0-flash"]
@@ -266,7 +321,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
         except Exception as e:
             if "503" in str(e) or "UNAVAILABLE" in str(e):
-                logging.warning(f"النموذج {model} يعاني من ضغط عند معالجة الصورة...")
+                logging.warning(f"النموذج {model} يعاني من ضغط...")
                 await asyncio.sleep(1)
                 continue
             else:
@@ -280,14 +335,32 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("آسفة يا سينباي! ما قدرت أشوف الصورة زين، السيرفرات مشغولة حالياً! 😅")
 
-# ====== معالج الأخطاء الشامل (Global Error Handler) ======
+# ====== التفاعل المجدول (الصباح والمساء) ======
+
+async def morning_greeting(context: ContextTypes.DEFAULT_TYPE):
+    for user_id in list(subscribers):
+        try:
+            prompt = "اكتبي رسالة ترحيبية صباحية قصيرة ولطيفة جداً ومفعمة بالحماس والنشاط المعتاد بشخصية ميساكي سينباي لتبدئي بها اليوم مع المستخدم!"
+            response = await client.aio.models.generate_content(model=MODEL_NAME, contents=prompt)
+            if response.text:
+                await context.bot.send_message(chat_id=user_id, text=response.text)
+        except Exception as e:
+            logging.error(f"خطأ في إرسال رسالة الصباح للمستخدم {user_id}: {e}")
+
+async def evening_greeting(context: ContextTypes.DEFAULT_TYPE):
+    for user_id in list(subscribers):
+        try:
+            prompt = "اكتبي رسالة مسائية قصيرة وبفضول لطيف تسألين فيها المستخدم بشخصية ميساكي عن ماذا فعل اليوم وكيف كان يومه!"
+            response = await client.aio.models.generate_content(model=MODEL_NAME, contents=prompt)
+            if response.text:
+                await context.bot.send_message(chat_id=user_id, text=response.text)
+        except Exception as e:
+            logging.error(f"خطأ في إرسال رسالة المساء للمستخدم {user_id}: {e}")
+
+# ====== معالج الأخطاء العام ======
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logging.error(msg="حدث استثناء لم يتم التقاطه أثناء معالجة التحديث:", exc_info=context.error)
-    if isinstance(update, Update) and update.effective_message:
-        await update.effective_message.reply_text(
-            "آسفة يا سينباي! حصل خطأ غير متوقع بالاتصال، اعد محاولة إرسال الرسالة! 😅"
-        )
+    logging.error(msg="حدث استثناء لم يتم التقاطه:", exc_info=context.error)
 
 # ====== التشغيل الرئيسي ======
 
@@ -299,21 +372,25 @@ def main():
     
     # تسجيل الأوامر
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("features", features_command))
+    app.add_handler(CommandHandler("whatsnew", whatsnew_command))
     app.add_handler(CommandHandler("reset", reset_command))
-    app.add_handler(CommandHandler("id", id_command))
     app.add_handler(CommandHandler("otaku", set_otaku))
     app.add_handler(CommandHandler("serious", set_serious))
     
-    # تسجيل معالج الأزرار، الرسائل النصية، والصور
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    
-    # تسجيل معالج الأخطاء العام
     app.add_error_handler(error_handler)
     
-    print("✅ البوت المطور شغال الآن... ميساكي مي جاهزة بالنظام الذكي وميزة الأخطاء!")
+    # جدولة الرسائل
+    job_queue = app.job_queue
+    if job_queue:
+        job_queue.run_daily(morning_greeting, time=datetime.time(hour=8, minute=30, second=0, tzinfo=TIMEZONE))
+        job_queue.run_daily(evening_greeting, time=datetime.time(hour=21, minute=30, second=0, tzinfo=TIMEZONE))
+        print("⏰ تم تفعيل جدولة الرسائل وتتبع الغياب التلقائي!")
+    
+    print("✅ البوت المطور شغال الآن بشبكة الميزات والتكشيف الذاتي للتحديثات!")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
