@@ -29,12 +29,13 @@ if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
 client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-3.6-flash"  
 
-# ====== الذاكرة والمزاج ======
+# ====== الذاكرة، المزاج، وتخصيص بيانات المستخدم ======
 user_sessions = {}
 user_moods = {}
+user_profiles = {}  # حفظ المعلومات الشخصية والاهتمامات لكل مستخدم
 MAX_HISTORY = 10
 
-# ====== برومبت الشخصيات المطور ======
+# ====== البرومبت الأساسي للنمطين ======
 PROMPTS = {
     "otaku": (
         "أنتِ 'ميساكي مي' (Misaki Mi)، فتاة عمرها 19 سنة تخرجت حديثاً من الثانوية. "
@@ -55,6 +56,8 @@ PROMPTS = {
         "- تنادين المستخدم بـ 'سينباي~' أو 'يا انت' بأسلوب دلع وعفوي.\n"
         "- ابدئي المحادثة عند الترحيب أو الفضول بـ: 'فوا... سينباي كنت تسوي ايش؟'.\n"
         "- إذا سألك المستخدم سؤالاً شخصياً عن المظهر أو الملابس مثل 'وش لابسة؟'، اضحكي وردي بعفوية: 'ليش يا هنتاي؟ 😳' ثم اذكري ملابسك العادية (الهودي والبنطلون المريح).\n\n"
+        "**بيانات ومفضلات صديقك (المستخدم):**\n"
+        "{user_custom_data}\n\n"
         "**القوانين:**\n"
         "1. ممنوع أن تكوني رسمية أبداً.\n"
         "2. لا تقولي أبداً 'أنا ذكاء اصطناعي' أو 'نموذج لغوي'.\n"
@@ -63,10 +66,19 @@ PROMPTS = {
     "serious": (
         "أنتِ 'ميساكي مي'، فتاة عمرها 19 سنة، بشعر أسود طويل وغرة، وعيون بنية، ترتدين هودي وبنطلون مريح. "
         "في هذا الوضع، تتحدثين بأسلوب جاد، رصين، ومباشر دون استخدام الكلمات اليابانية أو الإيموجيات الكثيرة أو الحماس الزائد. "
-        "تجيبين على الأسئلة باختصار وتنظيم دون الخوض في تفاصيل الجاتشا والأنمي. "
+        "تجيبين على الأسئلة وتحللين الصور باختصار وتنظيم دون الخوض في تفاصيل الجاتشا والأنمي.\n\n"
+        "**بيانات ومفضلات صديقك (المستخدم):**\n"
+        "{user_custom_data}\n\n"
         "اسم المستخدم الذي تتحدثين معه هو: {user_name}."
     )
 }
+
+# ====== بناء سياق التخصيص للمستخدم ======
+def get_user_custom_data(user_id: int) -> str:
+    profile = user_profiles.get(user_id, [])
+    if not profile:
+        return "- لا توجد مفضلات خاصة مسجلة بعد، تعرف عليه بفضولك العادي."
+    return "- " + "\n- ".join(profile)
 
 # ====== خادم ويب وهمي لإرضاء Render ======
 class Handler(BaseHTTPRequestHandler):
@@ -153,7 +165,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "question":
         await query.message.reply_text("سؤال اليوم: لو جمعت 180 سحبة في قنشن أو وذرنق، مين الشخصية اللي تضمنها فوراً؟ 🎮💀")
 
-# ====== معالجة الرسائل العادية مع معالجة ضغط السيرفرات ======
+# ====== معالجة الرسائل النصية ======
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -165,9 +177,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_id not in user_sessions:
         user_sessions[user_id] = []
+    if user_id not in user_profiles:
+        user_profiles[user_id] = []
 
+    # تخصيص البرومبت بناء على بيانات المستخدم المكتسبة
+    custom_data = get_user_custom_data(user_id)
     current_mood = user_moods.get(user_id, "otaku")
-    system_prompt = PROMPTS[current_mood].format(user_name=user_name)
+    system_prompt = PROMPTS[current_mood].format(user_name=user_name, user_custom_data=custom_data)
 
     user_sessions[user_id].append(types.Content(role="user", parts=[types.Part(text=user_text)]))
     user_sessions[user_id] = user_sessions[user_id][-MAX_HISTORY:]
@@ -206,6 +222,73 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_sessions[user_id].pop()
         await update.message.reply_text("آسفة يا سينباي! السيرفرات حالياً عليها ضغط عالي، جرب ترسل رسالتك بعد لحظات! 😅")
 
+# ====== معالجة الصور (Multimodal) ======
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name or "سينباي"
+    caption = update.message.caption or "وش هالصورة يا سينباي؟ ✨"
+
+    photo_file = await update.message.photo[-1].get_file()
+    photo_bytes = await photo_file.download_as_bytearray()
+
+    if user_id not in user_sessions:
+        user_sessions[user_id] = []
+    if user_id not in user_profiles:
+        user_profiles[user_id] = []
+
+    custom_data = get_user_custom_data(user_id)
+    current_mood = user_moods.get(user_id, "otaku")
+    system_prompt = PROMPTS[current_mood].format(user_name=user_name, user_custom_data=custom_data)
+
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+    )
+
+    image_part = types.Part.from_bytes(
+        data=bytes(photo_bytes),
+        mime_type="image/jpeg"
+    )
+    contents = [image_part, caption]
+
+    models_to_try = [MODEL_NAME, "gemini-2.0-flash"]
+    reply = None
+
+    for model in models_to_try:
+        try:
+            response = await client.aio.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config
+            )
+            reply = response.text
+            break
+        except Exception as e:
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                logging.warning(f"النموذج {model} يعاني من ضغط عند معالجة الصورة...")
+                await asyncio.sleep(1)
+                continue
+            else:
+                logging.error(f"حدث خطأ في الصورة: {e}")
+                break
+
+    if reply:
+        user_sessions[user_id].append(types.Content(role="user", parts=[types.Part(text=f"[أرسل صورة مرفقة بهذا النص: {caption}]")]))
+        user_sessions[user_id].append(types.Content(role="model", parts=[types.Part(text=reply)]))
+        await update.message.reply_text(reply)
+    else:
+        await update.message.reply_text("آسفة يا سينباي! ما قدرت أشوف الصورة زين، السيرفرات مشغولة حالياً! 😅")
+
+# ====== معالج الأخطاء الشامل (Global Error Handler) ======
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.error(msg="حدث استثناء لم يتم التقاطه أثناء معالجة التحديث:", exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text(
+            "آسفة يا سينباي! حصل خطأ غير متوقع بالاتصال، اعد محاولة إرسال الرسالة! 😅"
+        )
+
 # ====== التشغيل الرئيسي ======
 
 def main():
@@ -222,11 +305,15 @@ def main():
     app.add_handler(CommandHandler("otaku", set_otaku))
     app.add_handler(CommandHandler("serious", set_serious))
     
-    # تسجيل معالج الأزرار والرسائل النصية
+    # تسجيل معالج الأزرار، الرسائل النصية، والصور
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
-    print("✅ البوت المطور شغال الآن... ميساكي مي في الخدمة!")
+    # تسجيل معالج الأخطاء العام
+    app.add_error_handler(error_handler)
+    
+    print("✅ البوت المطور شغال الآن... ميساكي مي جاهزة بالنظام الذكي وميزة الأخطاء!")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
