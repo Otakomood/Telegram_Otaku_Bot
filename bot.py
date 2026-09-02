@@ -2,8 +2,8 @@ import os
 import logging
 import asyncio
 import threading
-import datetime
-import pytz
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from google import genai
 from google.genai import types
@@ -32,11 +32,11 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-3.6-flash"  
 
 # ====== إصدار البوت وسجل التحديثات (Self-Awareness) ======
-BOT_VERSION = "v2.5"
+BOT_VERSION = "v3.0"
 CHANGELOG = (
+    "• ميزة الإدراك الزمني الحقيقي (معرفة الساعة والتاريخ والفارق الزمني بين المحادثات).\n"
     "• ميزة افتقاد المستخدم إذا غاب لمدة ساعتين والعتاب اللطيف تلقائياً.\n"
     "• ميزة الرسائل المجدولة اليومية (صباحاً 8:30 والمساء 9:30).\n"
-    "• معالج الأخطاء العام لمنع انقطاع البوت أو توقفه.\n"
     "• ميزة أمر /features لمعرفة كل الميزات وأمر /whatsnew للتحديثات."
 )
 
@@ -44,11 +44,13 @@ CHANGELOG = (
 user_sessions = {}
 user_moods = {}
 user_profiles = {}
+user_last_seen = {}  # ذاكرة حفظ تاريخ ووقت آخر رسالة لكل مستخدم
 subscribers = set()
 MAX_HISTORY = 10
-INACTIVITY_TIMEOUT = 7200  # ساعتين
+INACTIVITY_TIMEOUT = 7200  # ساعتين (7200 ثانية)
 
-TIMEZONE = pytz.timezone("Asia/Riyadh")
+# المنطقة الزمنية (توقيت مكة المكرمة / اليمن / السعودية)
+TIMEZONE = ZoneInfo("Asia/Riyadh")
 
 # ====== البرومبت الأساسي ======
 PROMPTS = {
@@ -144,6 +146,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "سينباي"
     subscribers.add(user_id)
     reset_inactivity_timer(user_id, context)
+    user_last_seen[user_id] = datetime.now(TIMEZONE)
     
     keyboard = [
         [InlineKeyboardButton("⭐ الميزات الكاملة", callback_data="features"), InlineKeyboardButton("🔥 التحديثات الجديدة", callback_data="whatsnew")],
@@ -168,12 +171,13 @@ async def features_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_inactivity_timer(user_id, context)
     features_text = (
         "✨ **كافة ميزات ميساكي مي الحالية:**\n\n"
-        "1️⃣ **شخصية تفاعلية متكاملة:** الرد بأسلوب أنمي عفوي مع نمطين (`/otaku` و `/serious`).\n"
-        "2️⃣ **تحليل الصور:** إرسال الصور وقراءتها والتعليق عليها بذكاء.\n"
-        "3️⃣ **التفاعل التلقائي بالغياب:** تفقُّدك والعتاب اللطيف إذا غبت لمدة ساعتين دون مراسلة.\n"
-        "4️⃣ **الرسائل المجدولة:** تحية صباحية (8:30 ص) ومسائية (9:30 م) يومياً.\n"
-        "5️⃣ **الذاكرة والتخصيص:** حفظ مفضلاتك واهتماماتك والاطلاع عليها.\n"
-        "6️⃣ **سيرفر احتياطي للأخطاء:** حماية من ضغط السيرفرات والأخطاء المفاجئة."
+        "1️⃣ **إدراك الزمن والوقت الحقيقي:** معرفة الساعة والتاريخ والفارق الزمني بين رسائلك وتفاعلك معها بذكاء.\n"
+        "2️⃣ **شخصية تفاعلية متكاملة:** الرد بأسلوب أنمي عفوي مع نمطين (`/otaku` و `/serious`).\n"
+        "3️⃣ **تحليل الصور:** إرسال الصور وقراءتها والتعليق عليها بذكاء.\n"
+        "4️⃣ **التفاعل التلقائي بالغياب:** تفقُّدك والعتاب اللطيف إذا غبت لمدة ساعتين دون مراسلة.\n"
+        "5️⃣ **الرسائل المجدولة:** تحية صباحية (8:30 ص) ومسائية (9:30 م) يومياً.\n"
+        "6️⃣ **الذاكرة والتخصيص:** حفظ مفضلاتك واهتماماتك والاطلاع عليها.\n"
+        "7️⃣ **الوعي الذاتي:** التعرف على إصدارها المطور والأوامر والتحديثات."
     )
     await update.message.reply_text(features_text, parse_mode="Markdown")
 
@@ -214,7 +218,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "whatsnew":
         await whatsnew_command(update, context)
 
-# ====== معالجة الرسائل والصور ======
+# ====== معالجة الرسائل والصور مع الحساب الزمني ======
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -226,19 +230,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_text:
         return
 
+    # 1. معرفة الوقت والتاريخ الحالي بالتوقيت المحلي
+    now = datetime.now(TIMEZONE)
+    current_time_str = now.strftime("%Y-%m-%d %I:%M %p")
+
+    # 2. حساب الفارق الزمني عن آخر تواصل
+    time_passed_info = "هذه أول رسالة في الجلسة الحالية."
+    if user_id in user_last_seen:
+        last_time = user_last_seen[user_id]
+        time_diff = now - last_time
+        
+        hours = int(time_diff.total_seconds() // 3600)
+        minutes = int((time_diff.total_seconds() % 3600) // 60)
+        
+        if hours >= 24:
+            days = hours // 24
+            time_passed_info = f"مرّ {days} يوم على آخر تواصل بينكما."
+        elif hours > 0:
+            time_passed_info = f"مرّت {hours} ساعة و {minutes} دقيقة على آخر تواصل."
+        else:
+            time_passed_info = f"مرّت {minutes} دقيقة فقط على آخر تواصل."
+
+    # تحديث تاريخ ووقت التواصل الأخير
+    user_last_seen[user_id] = now
+
     if user_id not in user_sessions:
         user_sessions[user_id] = []
 
     custom_data = get_user_custom_data(user_id)
     current_mood = user_moods.get(user_id, "otaku")
     
-    # إمداد Gemini بسجل التحديثات والإصدار ليتحدث عنه بعفوية إن سأله المستخدم
+    # 3. دمج السياق الزمني في التعليمات المخفية
+    time_awareness_prompt = (
+        f"\n\n**معلومات الوقت الحقيقي:**\n"
+        f"- الوقت والتاريخ الحالي عندك الآن: {current_time_str}\n"
+        f"- حالة التواصل: {time_passed_info}\n"
+        f"- استغلي هذه المعلومات لتعرفي هل مرت أيام أم ساعات وتتفاعلي بأسلوب واقعي مع كلام المستخدم!"
+    )
+
     system_prompt = PROMPTS[current_mood].format(
         user_name=user_name,
         user_custom_data=custom_data,
         bot_version=BOT_VERSION,
         changelog=CHANGELOG
-    )
+    ) + time_awareness_prompt
 
     user_sessions[user_id].append(types.Content(role="user", parts=[types.Part(text=user_text)]))
     user_sessions[user_id] = user_sessions[user_id][-MAX_HISTORY:]
@@ -286,6 +321,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     photo_file = await update.message.photo[-1].get_file()
     photo_bytes = await photo_file.download_as_bytearray()
+
+    now = datetime.now(TIMEZONE)
+    user_last_seen[user_id] = now
 
     if user_id not in user_sessions:
         user_sessions[user_id] = []
@@ -386,11 +424,11 @@ def main():
     # جدولة الرسائل
     job_queue = app.job_queue
     if job_queue:
-        job_queue.run_daily(morning_greeting, time=datetime.time(hour=8, minute=30, second=0, tzinfo=TIMEZONE))
-        job_queue.run_daily(evening_greeting, time=datetime.time(hour=21, minute=30, second=0, tzinfo=TIMEZONE))
+        job_queue.run_daily(morning_greeting, time=time(hour=8, minute=30, second=0, tzinfo=TIMEZONE))
+        job_queue.run_daily(evening_greeting, time=time(hour=21, minute=30, second=0, tzinfo=TIMEZONE))
         print("⏰ تم تفعيل جدولة الرسائل وتتبع الغياب التلقائي!")
     
-    print("✅ البوت المطور شغال الآن بشبكة الميزات والتكشيف الذاتي للتحديثات!")
+    print("✅ البوت المطور شغال الآن بشبكة الميزات والإدراك الزمني الكامل!")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
