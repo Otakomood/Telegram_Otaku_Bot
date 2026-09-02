@@ -2,3 +2,4 @@ google-genai>=0.8.0
 python-telegram-bot[job-queue]>=20.0
 pytz
 pymongo
+dnspython
