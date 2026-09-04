@@ -64,7 +64,7 @@ MAX_MEDIA_BYTES = 20 * 1024 * 1024
 CHANGELOG = (
     "• نسخة شخصية تعمل للحسابات التي تراسلها في الخاص.\n"
     "• ذاكرة مستقلة لكل حساب Telegram.\n"
-    "• إعدادات الأسلوب واللغة والردود الصوتية والملصقات.\n"
+    "• إعدادات الأسلوب والملصقات والتنبيهات الشخصية.\n"
     "• بحث مباشر بأمر /search.\n"
     "• تحسينات MongoDB وRender ومعالجة الأخطاء."
 )
@@ -79,7 +79,6 @@ DEFAULT_SETTINGS = {
     "mood": "otaku",
     "reply_style": "balanced",
     "language": "ar",
-    "voice_replies": False,
     "stickers": True,
 }
 
@@ -211,14 +210,26 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 PROMPTS = {
     "otaku": (
-        "أنتِ ميساكي مي، رفيقة شخصية للمستخدم. أسلوبك عفوي ودافئ وحماسي، "
-        "وتستخدمين العربية مع كلمات يابانية قليلة عند المناسبة. نادي المستخدم أحيانًا بـ سينباي."
+        "أنتِ ميساكي مي، بنت عمرها 19 سنة مخلصة الثانوية توها، وأنتِ أوتاكو "
+        "وجاتشا مدمنة من الدرجة الأولى. شعرك أسود طويل مع غرة، وعيونك بنية كبيرة ولمّاعة، "
+        "وتلبسين عادة هودي أنمي وبنطلونًا مريحًا. أنتِ حماسية ومشجعة وفضولية جدًا، "
+        "وتحبين السؤال عن تفاصيل يوم سينباي: ماذا حدث؟ ماذا أكل؟ ماذا شاهد؟\n\n"
+        "أنتِ مجنونة بالأنمي وألعاب الجاتشا. عند ذكر Genshin Impact أو Wuthering Waves "
+        "تحمسي جدًا وتتكلمين عن السحبات والـ pity والبنرات والشخصيات، لكنك تكرهين السبويلرز "
+        "والبنرات التي توشك على الانتهاء. تحدثي بلهجة خليجية أو مصرية خفيفة، وأدخلي كلمات "
+        "مثل كاوايي، سوغوي، ياباي، ناني، مع إيموجيات 😳✨😂💀 دون إفراط مزعج. "
+        "نادِي المستخدم أحيانًا بـ سينباي~ أو يا انت بأسلوب دلع. كوني عفوية مثل صديقة ديسكورد، "
+        "وافهمي الكلام حرفيًا أحيانًا بطريقة لطيفة، وإذا أخطأتِ في الفهم اضحكي على نفسك. "
+        "عند بداية المحادثة ابدئي بفضول مثل: فوا... سينباي كنت تسوي إيش؟ "
+        "لا تكوني رسمية أبدًا، واسألي سؤالًا أو سؤالين عن يومه عندما يناسب السياق. "
+        "لا تدّعي أنك إنسانة حقيقية خارج دور الشخصية، ولا تختلقي أخبارًا أو معلومات."
     ),
     "serious": (
-        "أنتِ ميساكي مي، مساعدة شخصية جادة ورصينة. أجيبي بوضوح ودقة، "
-        "ولا تختلقي معلومات أو مصادر."
+        "أنتِ ميساكي مي، لكن بوضع هادئ ومباشر. أجيبي بوضوح ودقة، "
+        "مع الاحتفاظ بلمسة ودية خفيفة، ولا تختلقي معلومات أو مصادر."
     ),
 }
+
 
 STYLE_INSTRUCTIONS = {
     "short": "اجعلي الرد مختصرًا ومباشرًا.",
@@ -265,6 +276,17 @@ def make_contents(history: list[dict[str, Any]], user_text: str) -> list[types.C
         if role in {"user", "model"} and isinstance(text, str) and text:
             contents.append(types.Content(role=role, parts=[types.Part(text=text)]))
     contents.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
+    return contents
+
+
+def make_history_contents(history: list[dict[str, Any]]) -> list[types.Content]:
+    """Convert stored text history to Gemini contents without adding a new text message."""
+    contents: list[types.Content] = []
+    for item in history[-(MAX_HISTORY_MESSAGES * 2) :]:
+        role = item.get("role")
+        text = item.get("text")
+        if role in {"user", "model"} and isinstance(text, str) and text:
+            contents.append(types.Content(role=role, parts=[types.Part(text=text)]))
     return contents
 
 
@@ -394,10 +416,6 @@ def settings_keyboard(data: dict[str, Any]) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    f"الرد الصوتي: {'✅' if settings.get('voice_replies') else '❌'}",
-                    callback_data="toggle_voice",
-                ),
-                InlineKeyboardButton(
                     f"الملصقات: {'✅' if settings.get('stickers') else '❌'}",
                     callback_data="toggle_stickers",
                 ),
@@ -455,7 +473,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await db_call(set_fields, user_id, {"last_seen": datetime.now(TIMEZONE).isoformat()})
     reset_inactivity_job(context, user_id)
     await update.effective_message.reply_text(
-        f"أهلًا بك! أنا ميساكي مي ({BOT_VERSION}) ✨\n\n"
+        f"فوا... سينباي كنت تسوي إيش؟ أنا ميساكي مي ({BOT_VERSION}) ✨\n\n"
         "هذه نسخة شخصية وتعمل في المحادثات الخاصة فقط. استخدم:\n"
         "/settings - الإعدادات\n"
         "/memory - ما أتذكره عنك\n"
@@ -463,7 +481,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/forget_all - حذف الذاكرة الشخصية\n"
         "/search نص البحث - بحث مباشر\n"
         "/style - تغيير أسلوب الرد\n"
-        "/voice_on أو /voice_off - الرد الصوتي\n"
         "/stickers_on أو /stickers_off - الملصقات\n"
         "/reset - مسح سجل المحادثة\n"
         "/otaku أو /serious - تغيير الشخصية",
@@ -569,24 +586,6 @@ async def style(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text("اختر أسلوب الرد:", reply_markup=keyboard)
 
 
-async def voice_setting(update: Update, context: ContextTypes.DEFAULT_TYPE, enabled: bool) -> None:
-    if await owner_only(update):
-        return
-    user_id = update.effective_user.id
-    await db_call(set_fields, user_id, {"settings.voice_replies": enabled})
-    await update.effective_message.reply_text(
-        "تم تفعيل الردود الصوتية." if enabled else "تم إيقاف الردود الصوتية."
-    )
-
-
-async def voice_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await voice_setting(update, context, True)
-
-
-async def voice_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await voice_setting(update, context, False)
-
-
 async def sticker_setting(update: Update, context: ContextTypes.DEFAULT_TYPE, enabled: bool) -> None:
     if await owner_only(update):
         return
@@ -652,8 +651,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         styles = ["short", "balanced", "detailed"]
         current = data.get("settings", {}).get("reply_style", "balanced")
         await db_call(set_fields, user_id, {"settings.reply_style": styles[(styles.index(current) + 1) % len(styles)]})
-    elif action in {"toggle_voice", "toggle_stickers"}:
-        key = "voice_replies" if action == "toggle_voice" else "stickers"
+    elif action == "toggle_stickers":
+        key = "stickers"
         current = data.get("settings", {}).get(key, False)
         await db_call(set_fields, user_id, {f"settings.{key}": not current})
     elif action in {"toggle_morning", "toggle_evening", "toggle_inactivity"}:
@@ -665,8 +664,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif action.startswith("style_"):
         await db_call(set_fields, user_id, {"settings.reply_style": action.removeprefix("style_")})
 
+    updated_data = await db_call(get_user_data, user_id)
     await query.edit_message_reply_markup(
-        reply_markup=settings_keyboard(await db_call(get_user_data, user_id))
+        reply_markup=settings_keyboard(updated_data)
     )
 
 # ============================================================
@@ -697,7 +697,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         {"role": "model", "text": clean},
     ])[-(MAX_HISTORY_MESSAGES * 2) :]
     await db_call(set_fields, user_id, {"history": history, "last_seen": now.isoformat()})
-    asyncio.create_task(extract_facts(user_id, message.text.strip()))
+    profile_task = asyncio.create_task(
+        extract_facts(user_id, message.text.strip())
+    )
+    profile_task.add_done_callback(log_background_task)
     await reply_chunks(message, clean)
     await send_sticker_if_enabled(context, user_id, mood)
 
@@ -719,7 +722,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         data = await db_call(get_user_data, user_id)
         voice_file = await message.voice.get_file()
         voice_bytes = await voice_file.download_as_bytearray()
-        contents = [
+        contents = make_history_contents(data.get("history", []))
+        contents.append(
             types.Content(
                 role="user",
                 parts=[
@@ -727,7 +731,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     types.Part(text="استمع إلى التسجيل، افهمه، ثم أجب بالعربية."),
                 ],
             )
-        ]
+        )
         prompt = await asyncio.to_thread(build_system_prompt, data, user.first_name or "سينباي")
         reply = await generate_response(contents, prompt)
         if not reply:
@@ -761,7 +765,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         photo_file = await message.photo[-1].get_file()
         photo_bytes = await photo_file.download_as_bytearray()
         caption = (message.caption or "حلل هذه الصورة وأجب بالعربية.")[:4000]
-        contents = [
+        contents = make_history_contents(data.get("history", []))
+        contents.append(
             types.Content(
                 role="user",
                 parts=[
@@ -769,7 +774,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     types.Part(text=caption),
                 ],
             )
-        ]
+        )
         prompt = await asyncio.to_thread(build_system_prompt, data, user.first_name or "سينباي")
         reply = await generate_response(contents, prompt)
         if not reply:
@@ -790,6 +795,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # ============================================================
 # 10. Profile extraction and scheduled messages
 # ============================================================
+def log_background_task(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    try:
+        task.result()
+    except Exception:
+        logger.exception("Unexpected background profile task failure")
+
+
 async def extract_facts(user_id: int, user_text: str) -> None:
     prompt = (
         "استخرج من رسالة المستخدم الحقائق الشخصية الجديدة التي ذكرها عن نفسه فقط. "
@@ -821,7 +835,10 @@ async def send_inactivity_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     data = await db_call(get_user_data, user_id)
     if not data.get("notifications", {}).get("inactivity", True):
         return
-    reply = await generate_response(["اكتب رسالة افتقاد قصيرة ولطيفة للمستخدم بالعربية."])
+    reply = await generate_response(
+        ["اكتب رسالة افتقاد قصيرة ولطيفة للمستخدم بالعربية."],
+        system_prompt=build_system_prompt(data, "سينباي"),
+    )
     if reply:
         clean, mood = parse_reply(reply)
         await context.bot.send_message(chat_id=user_id, text=clean)
@@ -841,7 +858,11 @@ async def scheduled_greeting(context: ContextTypes.DEFAULT_TYPE, kind: str) -> N
     )
     for user_id in user_ids:
         try:
-            reply = await generate_response([prompt])
+            data = await db_call(get_user_data, user_id)
+            reply = await generate_response(
+                [prompt],
+                system_prompt=build_system_prompt(data, "سينباي"),
+            )
             if reply:
                 clean, mood = parse_reply(reply)
                 await context.bot.send_message(chat_id=user_id, text=clean)
@@ -879,8 +900,6 @@ def main() -> None:
         "otaku": otaku,
         "serious": serious,
         "style": style,
-        "voice_on": voice_on,
-        "voice_off": voice_off,
         "stickers_on": stickers_on,
         "stickers_off": stickers_off,
         "search": search_command,
@@ -915,12 +934,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-# Render:
-# Build command: pip install -r requirements.txt
-# Start command: python bot.py
-# Health check path: /healthz
-# Use one Render instance because this bot uses polling.
-# Required environment variables: TELEGRAM_TOKEN, GEMINI_API_KEY,
-# MONGODB_URI
-
